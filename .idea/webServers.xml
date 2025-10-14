@@ -9,6 +9,13 @@
           </advancedOptions>
         </fileTransfer>
       </webServer>
+      <webServer id="8fdf1060-bfa8-4086-8073-1ab1f9b5705a" name="5090_meanflow_vs">
+        <fileTransfer accessType="SFTP" host="connect.bjb1.seetacloud.com" port="16890" sshConfigId="19735cc4-78ef-4189-813f-ca9f548330ff" sshConfig="root@connect.bjb1.seetacloud.com:16890 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
     </option>
   </component>
 </project>

@@ -40,7 +40,7 @@ if __name__ == '__main__':
     device = "cuda" if torch.cuda.is_available() else "cpu"
     batch_size = 64
     image_size = 256
-    train_path = '/home/jerry/Projects/Dataset/imagenet/train'
+    train_path = '/Dataset/imagenet/train'
 
     os.makedirs('images', exist_ok=True)
     os.makedirs('checkpoints', exist_ok=True)

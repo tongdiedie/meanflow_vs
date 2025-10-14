@@ -8,7 +8,7 @@ from meanflow import MeanFlow
 from accelerate import Accelerator
 import time
 import os
-
+from CustomDataset import CustomDataset
 
 if __name__ == '__main__':
     n_steps = 200000
@@ -18,18 +18,19 @@ if __name__ == '__main__':
     os.makedirs('checkpoints', exist_ok=True)
     accelerator = Accelerator(mixed_precision='fp16')
 
-    dataset = torchvision.datasets.CIFAR10(
-        root="cifar",
-        train=True,
-        download=True,
-        transform=T.Compose([T.ToTensor(), T.RandomHorizontalFlip()]),
-    )
+    # dataset = torchvision.datasets.CIFAR10(
+    #     root="cifar",
+    #     train=True,
+    #     download=True,
+    #     transform=T.Compose([T.ToTensor(), T.RandomHorizontalFlip()]),
+    # )
     # dataset = torchvision.datasets.MNIST(
     #     root="mnist",
     #     train=True,
     #     download=True,
     #     transform=T.Compose([T.Resize((32, 32)), T.ToTensor(),]),
     # )
+    dataset = CustomDataset(root_dir='./data', transform=T.Compose([T.ToTensor(), T.RandomHorizontalFlip()]))
 
     def cycle(iterable):
         while True:

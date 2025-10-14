@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.bjb1.seetacloud.com:16890 password" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="root@connect.bjb1.seetacloud.com:16890 password (3)" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
       <paths name="5090_lzl_sj">
         <serverdata>
@@ -9,11 +9,10 @@
           </mappings>
         </serverdata>
       </paths>
-      <paths name="root@36.213.47.221:22 password">
+      <paths name="5090_meanflow_vs">
         <serverdata>
           <mappings>
-            <mapping deploy="/tmp/meanflow" local="$PROJECT_DIR$" web="/" />
-            <mapping local="" />
+            <mapping deploy="/home/diffusion/meanflow_vs" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
@@ -21,6 +20,20 @@
         <serverdata>
           <mappings>
             <mapping deploy="/home/diffusion/meanflow_main" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.bjb1.seetacloud.com:16890 password (2)">
+        <serverdata>
+          <mappings>
+            <mapping local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="root@connect.bjb1.seetacloud.com:16890 password (3)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/diffusion/meanflow_vs" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
