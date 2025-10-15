@@ -12,7 +12,7 @@ from torch.cuda.amp import autocast
 def modulate(x, scale, shift):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-
+# 时间步编码器
 class TimestepEmbedder(nn.Module):
     def __init__(self, dim, nfreq=256):
         super().__init__()
@@ -37,7 +37,7 @@ class TimestepEmbedder(nn.Module):
 
     def forward(self, t):
         t = t*1000
-        t_freq = self.timestep_embedding(t, self.nfreq)
+        t_freq = self.timestep_embedding(t, self.nfreq)   # 正弦余弦编码
         t_emb = self.mlp(t_freq)
         return t_emb
 

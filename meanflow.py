@@ -147,7 +147,7 @@ class MeanFlow:
             c = torch.where(cfg_mask, uncond, c)
             if self.w is not None:  # 使用无条件分支进行CFG(Classifier-Free Guidance)增强
                 with torch.no_grad():
-                    u_t = model(z, t, t, uncond)
+                    u_t = model(z, t, t, uncond)   #TODO CFG 增强
                 v_hat = self.w * v + (1 - self.w) * u_t
                 if self.cfg_uncond == 'v':
                     # offical JAX repo uses original v for unconditional items
