@@ -70,8 +70,8 @@ if __name__ == '__main__':
     losses = 0.0
     mse_losses = 0.0
 
-    log_step = 500      #TODO 原来500
-    sample_step = 500   #TODO 原来500
+    log_step = 500
+    sample_step = 500
 
     with tqdm(range(n_steps), dynamic_ncols=True) as pbar:
         pbar.set_description("Training")

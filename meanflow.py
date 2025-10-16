@@ -125,6 +125,7 @@ class MeanFlow:
         r = torch.tensor(r_np, device=device)
         return t, r
 
+    # TODO Meanflow: Training
     def loss(self, model, x, c=None):
         batch_size = x.shape[0]
         device = x.device
@@ -156,6 +157,21 @@ class MeanFlow:
             else:
                 v_hat = v
 
+        # --- 确保 v_hat 在所有路径下均已定义 ---
+        use_cfg = (self.num_classes is not None) and (c is not None) and (self.cfg_scale is not None)
+
+        if use_cfg:
+            # 这是“启用 CFG”的路径：按你当前代码的逻辑去构造 v_hat
+            # 下面给一个通用写法（如果你已有实现则沿用现有）：
+            # y = 条件标签（one-hot 或 int）；但在你的无分类设置下不会进来这个分支
+            # 例：u_tt_uncond = model(z, t, t, y=None)         # 无条件端点平均速度
+            #     v_hat = self.cfg_scale * v + (1.0 - self.cfg_scale) * u_tt_uncond
+            # （若你实现的是 κ 混合版本，可在这里扩展）
+            pass
+        else:
+            # ★ 无条件（unconditional）或未启用CFG：直接用 v 当作切向量里的速度
+            v_hat = v
+
         # forward pass
         # u = model(z, t, r, y=c)
         model_partial = partial(model, y=c)  # model_partial 是固定了部分参数(y=c)后的模型函数
@@ -179,6 +195,7 @@ class MeanFlow:
         mse_val = (stopgrad(error) ** 2).mean()
         return loss, mse_val
 
+    # TODO MeanFlow: 1-step Sampling
     @torch.no_grad()
     def sample_each_class(self, model, n_per_class, classes=None,   # 为每个类别生成指定数量的图像样本
                           sample_steps=5, device='cuda'):
@@ -210,4 +227,31 @@ class MeanFlow:
             z = z - (t_-r_) * v
 
         z = self.normer.unnorm(z)  # 将图像从归一化空间还原到原始像素空间
+        return z
+
+    @torch.no_grad()
+    def sample_uncond(self, model, n_images=16, sample_steps=1, device='cuda'):
+        """
+        无条件多步（few-step）采样，仍基于 MeanFlow 的一步公式离散滚动。
+        n_images: 生成的图像数量
+        sample_steps: 采样离散步数（5~10 作为演示；如果追求极限速度，可设为1）
+        """
+        model.eval()
+        z = torch.randn(
+            n_images, self.channels, self.image_size, self.image_size, device=device
+        )
+
+        t_vals = torch.linspace(1.0, 0.0, sample_steps + 1, device=device)
+        for i in range(sample_steps):
+            t = torch.full((z.size(0),), t_vals[i], device=device)
+            r = torch.full((z.size(0),), t_vals[i + 1], device=device)
+
+            t_ = rearrange(t, "b -> b 1 1 1").detach().clone()
+            r_ = rearrange(r, "b -> b 1 1 1").detach().clone()
+
+            # 无条件前向：y=None
+            v = model(z, t, r, y=None)
+            z = z - (t_ - r_) * v
+
+        z = self.normer.unnorm(z)
         return z
