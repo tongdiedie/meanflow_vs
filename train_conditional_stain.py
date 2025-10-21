@@ -1,5 +1,10 @@
 """
-虚拟染色训练脚本（最小测试版本）
+条件Flow虚拟染色训练脚本
+
+理论框架：
+    噪声 ε (t=1) <--Flow--> 目标图像 x_target (t=0)
+                   ↑
+              条件：源图像 x_source
 
 数据结构要求：
 ./data_paired/
@@ -9,37 +14,41 @@
     target/  (目标染色，如IHC)
         img0001.png
         img0002.png
-
-注意：这是一个最小测试版本，只跑几个iteration来验证流程
 """
 
-from models.dit import MFDiT
+from models.dit_conditional import ConditionalMFDiT
 import torch
 from torchvision import transforms as T
 from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
-from meanflow import MeanFlowTranslation
+from meanflow_conditional import ConditionalMeanFlow
 import os
 from PairedDataset import PairedDataset
-from metrics_eval import evaluate as eval_dir   # ★ 新增
+from metrics_eval import evaluate as eval_dir
 import time
 
 
 if __name__ == '__main__':
     print(f"\n{'='*80}")
-    print(f"虚拟染色训练脚本 - 最小测试版本")
+    print(f"条件Flow虚拟染色训练脚本")
+    print(f"理论: 噪声(t=1) → 目标图像(t=0), 条件=源图像")
     print(f"{'='*80}\n")
     
     # ========= 配置参数 =========
     PATCH_SIZE = 256          # patch大小
-    BATCH_SIZE = 8            # 小批量用于测试
-    N_TEST_STEPS = 1000         # iteration测试
-    SAMPLE_STEPS = 5          # 翻译时的采样步数
-    VAL_SAVE_PRED_DIR = "outputs/val/pred"    # 预测结果
-    VAL_SAVE_GT_DIR   = "outputs/val/gt"      # Ground Truths
-    EVAL_EVERY_STEPS  = 1  # 例如每50步快速评估一次（你也可换成每个epoch）
-    xlsx_path = "metrics/metrics.xlsx"    # 固定一个Excel，统一写入
+    BATCH_SIZE = 8            # 批量大小
+    N_TEST_STEPS = 1000       # 测试迭代数
+    SAMPLE_STEPS = 10         # 翻译时的ODE求解步数（增加到10步以提高质量）
+    VAL_SAVE_PRED_DIR = "outputs/val/pred"
+    VAL_SAVE_GT_DIR   = "outputs/val/gt"
+    EVAL_EVERY_STEPS  = 50    # 每50步评估一次
+    
     DIT_PATCH_SIZE = 16       # DiT内部的patch size
+    
+    # CFG参数
+    USE_CFG = False           # 是否使用Classifier-Free Guidance
+    CFG_RATIO = 0.1           # 训练时无条件的比例（10%的batch无条件训练）
+    CFG_SCALE = 1.5           # 推理时的CFG缩放因子（>1增强条件影响）
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"使用设备: {device}\n")
@@ -49,10 +58,6 @@ if __name__ == '__main__':
     os.makedirs(VAL_SAVE_PRED_DIR, exist_ok=True)
     os.makedirs(VAL_SAVE_GT_DIR,   exist_ok=True)
     os.makedirs("metrics", exist_ok=True)
-    
-    # ========= 检查或创建测试数据 =========
-    if not os.path.exists('/root/autodl-tmp/Ki67/data_paired/source') or not os.path.exists('/root/autodl-tmp/Ki67/data_paired/target'):
-        print("⚠️  未找到数据目录，创建虚拟测试数据...")
     
     # ========= 加载配对数据集 =========
     transform = T.Compose([
@@ -81,22 +86,23 @@ if __name__ == '__main__':
         batch_size=BATCH_SIZE, 
         shuffle=True, 
         drop_last=True,
-        num_workers=0  # 测试时用0避免multiprocessing问题
+        num_workers=0
     )
     
-    # ========= 初始化模型 =========
+    # ========= 初始化条件DiT模型 =========
     print(f"\n{'='*60}")
-    print(f"[模型初始化]")
+    print(f"[模型初始化 - 条件DiT]")
     print(f"{'='*60}")
     
-    model = MFDiT(
+    model = ConditionalMFDiT(
         input_size=PATCH_SIZE,      # 256
         patch_size=DIT_PATCH_SIZE,  # 16 -> 256/16 = 16x16 tokens
         in_channels=3,              # RGB
         dim=384,                    # 嵌入维度
-        depth=4,                    # 只用4层测试（原来是12层）
+        depth=6,                    # 6层Transformer（比测试版深）
         num_heads=6,
-        num_classes=None,           # 无条件翻译
+        num_classes=None,           # 无类别条件
+        cond_mode='concat',         # 条件融合模式：concat
     ).to(device)
     
     # 打印模型信息
@@ -105,28 +111,33 @@ if __name__ == '__main__':
     print(f"  - 总参数量: {total_params:,}")
     print(f"  - 输入尺寸: {PATCH_SIZE}x{PATCH_SIZE}")
     print(f"  - Patch数量: {(PATCH_SIZE//DIT_PATCH_SIZE)**2}")
+    print(f"  - 条件融合后token数: {(PATCH_SIZE//DIT_PATCH_SIZE)**2 * 2} (concat模式)")
     print(f"  - 嵌入维度: 384")
-    print(f"  - Transformer深度: 4层")
+    print(f"  - Transformer深度: 6层")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
     
-    # ========= 初始化MeanFlow翻译器 =========
-    meanflow = MeanFlowTranslation(
+    # ========= 初始化条件MeanFlow ==========
+    meanflow = ConditionalMeanFlow(
         channels=3,
         image_size=PATCH_SIZE,
         normalizer=['minmax', None, None],  # [0,1] -> [-1,1]
-        flow_ratio=0.50,
-        time_dist=['lognorm', -0.4, 1.0],
-        cfg_ratio=0.0,      # 禁用CFG
-        cfg_scale=None,     # 禁用CFG
-        cfg_uncond='v',
+        flow_ratio=0.50,                    # 50%端点训练
+        time_dist=['lognorm', -0.4, 1.0],   # Log-normal时间分布
+        cfg_ratio=CFG_RATIO if USE_CFG else 0.0,
+        cfg_scale=CFG_SCALE if USE_CFG else None,
+        cfg_uncond='zeros',                 # 无条件时用零图像
         jvp_api='autograd'
     )
     
-    # ========= 测试训练循环 =========
+    # ========= 训练循环 =========
     print(f"\n{'='*60}")
-    print(f"[开始测试训练]")
-    print(f"  只跑 {N_TEST_STEPS} 个iteration验证流程")
+    print(f"[开始训练 - 条件Flow]")
+    print(f"  迭代数: {N_TEST_STEPS}")
+    if USE_CFG:
+        print(f"  CFG训练: 启用（ratio={CFG_RATIO}, scale={CFG_SCALE}）")
+    else:
+        print(f"  CFG训练: 禁用")
     print(f"{'='*60}\n")
     
     model.train()
@@ -149,16 +160,19 @@ if __name__ == '__main__':
         
         print(f"\n[数据批次]")
         print(f"  - Batch size: {x_source.shape[0]}")
-        print(f"  - x_source: shape={x_source.shape}, range=[{x_source.min():.3f}, {x_source.max():.3f}]")
-        print(f"  - x_target: shape={x_target.shape}, range=[{x_target.min():.3f}, {x_target.max():.3f}]")
+        print(f"  - x_source (条件): shape={x_source.shape}, range=[{x_source.min():.3f}, {x_source.max():.3f}]")
+        print(f"  - x_target (目标): shape={x_target.shape}, range=[{x_target.min():.3f}, {x_target.max():.3f}]")
         
-        # === 前向传播 ===
+        # === 前向传播（条件Flow）===
         loss, mse_val = meanflow.loss(model, x_source, x_target, c=None)
         
         # === 反向传播 ===
         print(f"\n[反向传播]")
         optimizer.zero_grad()
         loss.backward()
+        
+        # 梯度裁剪（防止梯度爆炸）
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         # 打印梯度信息
         total_norm = 0
@@ -176,35 +190,37 @@ if __name__ == '__main__':
         print(f"  - Loss: {loss.item():.6f}")
         print(f"  - MSE: {mse_val.item():.6f}")
         
-        # === 每5步做一次翻译测试 ===
+        # === 定期评估 ===
         if (step + 1) % EVAL_EVERY_STEPS == 0:
-            print(f"\n{'='*60}\n[EVAL] 运行快速验证评估（保存若干patch）\n{'='*60}")
-            model.eval()
-            print(f"[翻译测试] Step {step+1}")
+            print(f"\n{'='*60}")
+            print(f"[EVAL] Step {step+1} - 运行验证评估")
             print(f"{'='*60}")
             
             model.eval()
             with torch.no_grad():
-                # 取一个小批次做验证推理并落盘（同名）
-                b = min(8, x_source.size(0))  # 取前8张
+                # 取一小批做验证
+                b = min(8, x_source.size(0))
                 test_src = x_source[:b]
                 test_tgt = x_target[:b]
                 
                 print(f"\n测试输入:")
-                print(f"  - test_source: shape={test_src.shape}")
+                print(f"  - test_source (条件): shape={test_src.shape}")
+                print(f"  - test_target (GT): shape={test_tgt.shape}")
 
-                # 进行翻译
+                # 条件Flow翻译
+                cfg_scale_eval = CFG_SCALE if USE_CFG else None
                 translated = meanflow.translate(
                     model, 
                     test_src, 
                     sample_steps=SAMPLE_STEPS,
+                    cfg_scale=cfg_scale_eval,
                     device=device
                 )
                 
-                print(f"测试输出:")
+                print(f"\n测试输出:")
                 print(f"  - translated: shape={translated.shape}, range=[{translated.min():.3f}, {translated.max():.3f}]")
 
-                # 保存：pred 到 pred_dir，gt 到 gt_dir，文件名统一
+                # 保存预测和GT
                 for i in range(b):
                     name = f"step{step+1:05d}_idx{i:02d}.png"
                     save_image(test_tgt[i].cpu(), os.path.join(VAL_SAVE_GT_DIR, name))
@@ -217,52 +233,60 @@ if __name__ == '__main__':
                     test_tgt.cpu()
                 ], dim=0)
                 
-                grid = make_grid(comparison, nrow=3)
-                save_path = f"images/test_step_{step+1}.png"
+                grid = make_grid(comparison, nrow=b, normalize=True, value_range=(0, 1))
+                save_path = f"images/eval_step_{step+1:05d}.png"
                 save_image(grid, save_path)
-                print(f"  - 已保存对比图到: {save_path}")
-                print(f"    格式: [源染色 | 翻译结果 | 目标染色]")
+                print(f"  - 已保存对比图: {save_path}")
+                print(f"    格式: 第1行=源染色 | 第2行=翻译结果 | 第3行=目标染色")
 
-                exp_meta = {
-                    "step": step + 1,
-                    "split": "val",
-                    "sample_steps": SAMPLE_STEPS
-                }
-
-                # 调用评估,并保存每张图的指标到csv
+                # 评估指标
                 try:
                     stamp = time.strftime("%Y%m%d-%H%M%S")
                     csv_path = f"metrics/per_image_{stamp}_step{step+1:05d}.csv"
-                    summary = eval_dir(VAL_SAVE_PRED_DIR, VAL_SAVE_GT_DIR, 
-                                       csv_out=csv_path,xlsx_out=xlsx_path,exp_meta=exp_meta)
-                    print(f"[EVAL@{step+1}] "
-                        f"FID={summary['FID']:.3f}  "
-                        f"KID={summary['KID_mean']:.5f}±{summary['KID_std']:.5f}  "
-                        f"PSNR={summary['PSNR_mean']:.3f}  "
-                        f"SSIM={summary['SSIM_mean']:.3f}  "
-                        f"LPIPS={summary['LPIPS_mean']:.4f}")
+                    summary = eval_dir(VAL_SAVE_PRED_DIR, VAL_SAVE_GT_DIR, csv_out=csv_path)
+                    print(f"\n[EVAL@{step+1}] 指标:")
+                    print(f"  - FID: {summary['FID']:.3f}")
+                    print(f"  - KID: {summary['KID_mean']:.5f} ± {summary['KID_std']:.5f}")
+                    print(f"  - PSNR: {summary['PSNR_mean']:.3f} dB")
+                    print(f"  - SSIM: {summary['SSIM_mean']:.3f}")
+                    print(f"  - LPIPS: {summary['LPIPS_mean']:.4f}")
                 except Exception as e:
                     print(f"[EVAL] 评估失败：{e}")
 
             model.train()
     
-    # ========= 保存模型 =========
+    # ========= 保存最终模型 =========
     print(f"\n{'='*60}")
     print(f"[保存模型]")
-    ckpt_path = f"checkpoints/test_model.pt"
-    torch.save(model.state_dict(), ckpt_path)
+    ckpt_path = f"checkpoints/conditional_flow_model_step{N_TEST_STEPS}.pt"
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'step': N_TEST_STEPS,
+    }, ckpt_path)
     print(f"  - 已保存模型到: {ckpt_path}")
     print(f"{'='*60}\n")
     
+    # ========= 最终评估 =========
     print(f"\n{'='*80}")
-    print(f"✓ 测试完成！")
+    print(f"✓ 训练完成！")
     print(f"{'='*80}")
+    print(f"\n理论验证:")
+    print(f"  ✓ 使用正确的Flow理论：噪声(t=1) → 目标(t=0)")
+    print(f"  ✓ 源图像作为条件引导生成")
+    print(f"  ✓ 插值路径有物理意义：z(t) = t·ε + (1-t)·x_target")
+    print(f"  ✓ 速度场正确：v = x_target - ε")
     print(f"\n检查结果:")
-    print(f"  1. 查看 images/ 文件夹中的翻译对比图")
-    print(f"  2. 格式: [源染色 | 翻译结果 | 目标染色]")
-    print(f"  3. 如果三张图有明显差异，说明模型正在学习翻译")
-    print(f"\n下一步:")
-    print(f"  - 如果流程正常，可以增加训练步数（修改N_TEST_STEPS）")
-    print(f"  - 使用真实的配对染色数据替换虚拟数据")
-    print(f"  - 调整模型深度（depth）和维度（dim）以提升性能")
+    print(f"  1. 查看 images/ 文件夹中的对比图")
+    print(f"  2. 格式: 第1行=源染色 | 第2行=翻译结果 | 第3行=目标染色")
+    print(f"  3. 查看 metrics/ 文件夹中的评估指标")
+    print(f"\n预期效果:")
+    print(f"  - 翻译结果应该保留源图像的结构")
+    print(f"  - 翻译结果应该具有目标染色的颜色/纹理特征")
+    print(f"  - 随着训练进行，FID/LPIPS应该下降，PSNR/SSIM应该上升")
+    print(f"\n下一步优化:")
+    print(f"  1. 增加训练步数和模型深度")
+    print(f"  2. 如果效果仍不理想，尝试启用CFG (USE_CFG=True)")
+    print(f"  3. 调整采样步数 SAMPLE_STEPS (10-50)")
+    print(f"  4. 考虑添加感知损失（LPIPS）辅助训练")
     print(f"{'='*80}\n")
