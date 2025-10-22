@@ -39,8 +39,8 @@ if __name__ == '__main__':
     BATCH_SIZE = 8            # 批量大小
     N_TEST_STEPS = 1000       # 测试迭代数
     SAMPLE_STEPS = 10         # 翻译时的ODE求解步数（增加到10步以提高质量）
-    VAL_SAVE_PRED_DIR = "outputs/val/pred"
-    VAL_SAVE_GT_DIR   = "outputs/val/gt"
+    VAL_SAVE_PRED_DIR = "./outputs/val/pred"
+    VAL_SAVE_GT_DIR   = "./outputs/val/gt"
     EVAL_EVERY_STEPS  = 50    # 每50步评估一次
     
     DIT_PATCH_SIZE = 16       # DiT内部的patch size
@@ -53,11 +53,11 @@ if __name__ == '__main__':
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"使用设备: {device}\n")
     
-    os.makedirs('images', exist_ok=True)
-    os.makedirs('checkpoints', exist_ok=True)
+    os.makedirs('./images', exist_ok=True)
+    os.makedirs('./checkpoints', exist_ok=True)
     os.makedirs(VAL_SAVE_PRED_DIR, exist_ok=True)
     os.makedirs(VAL_SAVE_GT_DIR,   exist_ok=True)
-    os.makedirs("metrics", exist_ok=True)
+    os.makedirs("./metrics", exist_ok=True)
     
     # ========= 加载配对数据集 =========
     transform = T.Compose([
@@ -234,7 +234,7 @@ if __name__ == '__main__':
                 ], dim=0)
                 
                 grid = make_grid(comparison, nrow=b, normalize=True, value_range=(0, 1))
-                save_path = f"images/eval_step_{step+1:05d}.png"
+                save_path = f"./images/eval_step_{step+1:05d}.png"
                 save_image(grid, save_path)
                 print(f"  - 已保存对比图: {save_path}")
                 print(f"    格式: 第1行=源染色 | 第2行=翻译结果 | 第3行=目标染色")
@@ -242,7 +242,7 @@ if __name__ == '__main__':
                 # 评估指标
                 try:
                     stamp = time.strftime("%Y%m%d-%H%M%S")
-                    csv_path = f"metrics/per_image_{stamp}_step{step+1:05d}.csv"
+                    csv_path = f"./metrics/per_image_{stamp}_step{step+1:05d}.csv"
                     summary = eval_dir(VAL_SAVE_PRED_DIR, VAL_SAVE_GT_DIR, csv_out=csv_path)
                     print(f"\n[EVAL@{step+1}] 指标:")
                     print(f"  - FID: {summary['FID']:.3f}")
@@ -258,7 +258,7 @@ if __name__ == '__main__':
     # ========= 保存最终模型 =========
     print(f"\n{'='*60}")
     print(f"[保存模型]")
-    ckpt_path = f"checkpoints/conditional_flow_model_step{N_TEST_STEPS}.pt"
+    ckpt_path = f"./checkpoints/conditional_flow_model_step{N_TEST_STEPS}.pt"
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),

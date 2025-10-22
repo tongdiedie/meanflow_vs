@@ -1,14 +1,44 @@
 import os, re
-from PIL import Image
+from PIL import Image, ImageOps
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as T
-
+# 在计算行列数与真正裁剪之前，先把两张配对图中心裁成同尺寸，再pad 到 patch_size 的整数倍，这样上/下两排一定像素对齐。
 IMG_EXTS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
 
 def _natural_key(name: str):
     # 自然排序：img2 < img10；提取数字块按数值比较
     return [int(s) if s.isdigit() else s for s in re.split(r'(\d+)', name)]
+
+# ========================= 新增：对齐与填充工具函数 =========================
+def _center_crop_to_same(src_img, tgt_img):
+    """将两张图中心裁成相同尺寸（取各自宽高的最小值）"""
+    w = min(src_img.width, tgt_img.width)
+    h = min(src_img.height, tgt_img.height)
+    def _c(img, w, h):
+        left = (img.width  - w) // 2
+        top  = (img.height - h) // 2
+        return img.crop((left, top, left + w, top + h))
+    return _c(src_img, w, h), _c(tgt_img, w, h)
+
+def _pad_to_multiple(img, patch):
+    # pad 到 patch_size 的整数倍（右/下方向），避免最后一行/列尺寸不足
+    pw = ((img.width  + patch - 1) // patch) * patch
+    ph = ((img.height + patch - 1) // patch) * patch
+    pad_w = pw - img.width
+    pad_h = ph - img.height
+    if pad_w == 0 and pad_h == 0:
+        return img
+    # 用边缘延拓，避免硬填纯色
+    img = ImageOps.expand(img, border=(0, 0, pad_w, pad_h), fill=None)
+    # 补丁：Pillow 的边缘延拓对 RGB 不总是生效，这里把最后一列/行复制过去
+    if pad_w > 0:
+        right = img.crop((img.width - 1 - pad_w, 0, img.width - 1, img.height))
+        img.paste(right, (img.width - pad_w, 0))
+    if pad_h > 0:
+        bottom = img.crop((0, img.height - 1 - pad_h, img.width, img.height - 1))
+        img.paste(bottom, (0, img.height - pad_h))
+    return img
 
 class PairedDataset(Dataset):
     """
@@ -25,7 +55,7 @@ class PairedDataset(Dataset):
     
     关键：source和target文件夹中的图像必须按文件名一一对应
     """
-    def __init__(self, root_dir, patch_size=256, transform=None, recursive=False):
+    def __init__(self, root_dir, patch_size=256, transform=None, stride=None, recursive=False, return_name=False):
         """
         Args:
             root_dir: 数据集根目录
@@ -41,6 +71,16 @@ class PairedDataset(Dataset):
         self.source_dir = os.path.join(root_dir, 'source')  
         self.target_dir = os.path.join(root_dir, 'target')  
         
+        self.paired_paths = []
+        self._collect_paired_images(recursive)
+
+        if len(self.paired_paths) == 0:
+            raise FileNotFoundError(f"No paired images found in {root_dir}")
+
+        # 预计算每对图像的 patch 索引：[(pair_idx, r, c), ...]
+        self.patch_indices = []
+        self._precompute_patch_info()
+
         print(f"\n{'='*60}")
         print(f"[PairedDataset] 初始化配对数据集")
         print(f"  - 根目录: {root_dir}")
@@ -48,7 +88,7 @@ class PairedDataset(Dataset):
         print(f"  - 目标染色目录: {self.target_dir}")
         print(f"  - Patch大小: {patch_size}x{patch_size}")
         print(f"{'='*60}\n")
-        
+
         # 检查文件夹是否存在
         if not os.path.exists(self.source_dir):
             raise FileNotFoundError(f"Source目录不存在: {self.source_dir}")
@@ -91,6 +131,7 @@ class PairedDataset(Dataset):
                         rel = os.path.relpath(os.path.join(root, f), self.target_dir)
                         target_files[rel] = os.path.join(root, f)
             common_files = sorted(set(source_files.keys()) & set(target_files.keys()), key=_natural_key)
+            self.paired_paths = [(source_files[k], target_files[k], os.path.splitext(os.path.basename(k))[0]) for k in common_files]
             for rel in common_files:
                 self.paired_paths.append((source_files[rel], target_files[rel]))
         else:
@@ -120,9 +161,17 @@ class PairedDataset(Dataset):
         
         for pair_idx, (src_path, tgt_path) in enumerate(self.paired_paths):
             try:
-                # 读取source图像以确定尺寸（假设source和target尺寸相同）
-                image = Image.open(src_path).convert('RGB')
-                w, h = image.size  # PIL返回(width, height)
+                # 读取两张配对图像
+                src_img = Image.open(src_path).convert('RGB')
+                tgt_img = Image.open(tgt_path).convert('RGB')
+
+                # ========== 关键改动：先中心对齐，再pad到patch整数倍 ==========
+                src_img, tgt_img = _center_crop_to_same(src_img, tgt_img)
+                src_img = _pad_to_multiple(src_img, self.patch_size)
+                tgt_img = _pad_to_multiple(tgt_img, self.patch_size)
+                # ==========================================================
+
+                w, h = src_img.size  # PIL返回(width, height)
                 
                 # 计算能切多少个patch
                 # 这里使用滑动窗口，步长=patch_size（无重叠）
