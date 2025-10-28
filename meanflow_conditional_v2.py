@@ -203,7 +203,7 @@ class ConditionalMeanFlow:
         1. 采样噪声: ε ~ N(0, I)
         2. 采样时间: t, r ~ p(t, r)
         3. 插值状态: z(t) = t·ε + (1-t)·x_target
-        4. 真实速度场: v = ε - x_target   已修改 原v = x_target - ε
+        4. 真实速度场: v = x_target - ε
         5. 条件: c = x_source
         6. 模型预测: u(z, t, r, c) ≈ E[v | z(t), c]
         7. 目标值: u_tgt = v - (t-r)·∂u/∂t
@@ -252,16 +252,15 @@ class ConditionalMeanFlow:
         # ===== 步骤4: 插值状态 z(t) = t·ε + (1-t)·x_target =====
         # 关键改变：现在是噪声和目标图像的插值
         z = t_ * epsilon + (1 - t_) * x_target
-        # z = (1 - t_) * epsilon + t_ * x_target  # 正向时间：t=0是噪声，t=1是目标图像
+        v = epsilon - x_target  # ✅ 正确方向
         print(f"  插值状态:")
         print(f"    - z: shape={z.shape}, range=[{z.min():.3f}, {z.max():.3f}]")
         print(f"    - 公式: z = t·ε + (1-t)·x_target")
         print(f"    - 物理意义: t=1时是纯噪声，t=0时是目标图像")
         
-        # ===== 步骤5: 真实速度场 v = ε - x_target =====
-        # 正向时间 dz/dt = ε - x_target
-        v = epsilon - x_target
-        # v = x_target - epsilon # dz/dt = d/dt[(1-t)·ε + t·x_target] = x_target - ε
+        # ===== 步骤5: 真实速度场 v = x_target - ε =====
+        # v = x_target - epsilon  修改
+        u_tgt = v
         print(f"  真实速度场:")
         print(f"    - v: shape={v.shape}, range=[{v.min():.3f}, {v.max():.3f}]")
         print(f"    - 公式: v = x_target - ε")
@@ -274,11 +273,15 @@ class ConditionalMeanFlow:
             if self.cfg_uncond == 'zeros':
                 x_source_cond = torch.zeros_like(x_source)
             elif self.cfg_uncond == 'v':
-                x_source_cond = v
+                x_source_cond = v  # 用速度场作为无条件输入
             print(f"  [CFG] 本批次使用无条件训练（cfg_ratio={self.cfg_ratio}）")
         else:
             x_source_cond = x_source
+        
+        # v_hat = v  # 默认使用真实速度场   修改
+        # 正确目标：直接拟合真实速度场
 
+        
         # ===== 步骤7: 模型前向传播 =====
         # 输入：插值状态z，时间t和r，条件x_source_cond
         # 输出：预测的平均速度场u
@@ -291,74 +294,37 @@ class ConditionalMeanFlow:
         # 使用partial创建条件模型
         # 注意：这里的y参数用于传入条件图像x_source
         #model_partial = partial(model, y=c, cond_image=x_source_cond)
-        def model_with_cond(z_, t_, r_):
-            return model(z_, t_, r_, y=c, cond_image=x_source_cond)
-        
-        # 以下注释都做修改
-        # # TODO 改 JVP计算：同时得到u和∂u/∂t
-        # zeros_z = torch.zeros_like(z)
-        # jvp_args = (
-        #     model_with_cond,
-        #     (z, t, r),
-        #     (zeros_z, torch.ones_like(t), torch.zeros_like(r)),  # ✅ 只对 t 求偏导
-        # )
-        # print(f"[DEBUG] 条件图像传入前:")
-        # print(f"  - x_source_cond: {x_source_cond.shape}, range=[{x_source_cond.min():.3f}, {x_source_cond.max():.3f}]")
-        # print(f"  - x_source_cond是否全零: {(x_source_cond == 0).all().item()}")
-                
-        # if self.create_graph:
-        #     u, dudt = self.jvp_fn(*jvp_args, create_graph=self.create_graph)
-        # else:
-        #     u, dudt = self.jvp_fn(*jvp_args)
-        
-        # # 检查输出
-        # print(f"[DEBUG] 模型输出:")
-        # print(f"  - u的标准差: {u.std().item():.6f}")
-        # print(f"  - 如果标准差接近1.0，说明模型只输出噪声")
-        # # ===== 步骤8: 目标值计算 =====
-        # # u_tgt = v_hat - (t - r) * dudt
-        # # 这是MeanFlow的核心公式，确保模型预测的是平均速度场
-        # # u_tgt = v_hat - (t_ - r_) * dudt 修改
-        # v = epsilon - x_target
-        # u_tgt = v  # 直接拟合真实速度场（避免梯度抵消）
-        # print(f"    - 修正后u_tgt: range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")
-        # print(f"    - 目标值u_tgt: shape={u_tgt.shape}, range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")  
-        # print(f"    - 公式: u_tgt = v - (t-r)·∂u/∂t")
-        
-
-        # 预测 u
-        # u = model_with_cond(z, t, r)
-
-        # # 计算 du/dt（对每个样本把 u 求和成标量，再对 t 求导）
-        # t_for_grad = t.detach().clone().requires_grad_(True)
-        # u_for_grad = model_with_cond(z, t_for_grad, r)
-        # s = u_for_grad.view(u_for_grad.size(0), -1).sum(dim=1)    # [B] 标量化
-        # dudt = torch.autograd.grad(
-        #     outputs=s, inputs=t_for_grad,
-        #     grad_outputs=torch.ones_like(t_for_grad),
-        #     create_graph=False, retain_graph=False, allow_unused=False
-        # )[0].view(-1, 1, 1, 1)                                    # [B,1,1,1]
-
-        # # ===== 步骤8: 目标值（MeanFlow一致性）=====
-        # # 与你的采样更新 z <- z - (t-r)*u 保持一致：u 近似区间平均速度
-        # # 采用 u_tgt = v - (t-r) * ∂u/∂t；为稳定起见，对 dudt 做 stopgrad
-        # u_tgt = v - (t_ - r_) * stopgrad(dudt)
-
-        # 目标：直接拟合真实速度场
-        # u_tgt = v
-        # 使用JVP计算 u 和 ∂u/∂t
+        def model_with_cond(z, t, r):
+            return model(z, t, r, y=c, cond_image=x_source_cond)        
+        # TODO 改 JVP计算：同时得到u和∂u/∂t
         zeros_z = torch.zeros_like(z)
-        tangent = (zeros_z, torch.ones_like(t), torch.zeros_like(r))  # 只对t求导
-        
+        jvp_args = (
+            model_with_cond,
+            (z, t, r),
+            (zeros_z, torch.ones_like(t), torch.zeros_like(r)),  # ✅ 只对 t 求偏导
+        )
+        print(f"[DEBUG] 条件图像传入前:")
+        print(f"  - x_source_cond: {x_source_cond.shape}, range=[{x_source_cond.min():.3f}, {x_source_cond.max():.3f}]")
+        print(f"  - x_source_cond是否全零: {(x_source_cond == 0).all().item()}")
+                
         if self.create_graph:
-            u, dudt = self.jvp_fn(model_with_cond, (z, t, r), tangent, create_graph=True)
+            u, dudt = self.jvp_fn(*jvp_args, create_graph=self.create_graph)
         else:
-            u, dudt = self.jvp_fn(model_with_cond, (z, t, r), tangent)
+            u, dudt = self.jvp_fn(*jvp_args)
         
-        # 8. MeanFlow目标值: u_tgt = v - (t-r)·∂u/∂t
-        u_tgt = v - (t_ - r_) * stopgrad(dudt)
-        print(f"    - u_tgt: range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")
-        print(f"    - 公式: u_tgt = (ε - x_target) - (t-r)·∂u/∂t")
+        # 检查输出
+        print(f"[DEBUG] 模型输出:")
+        print(f"  - u的标准差: {u.std().item():.6f}")
+        print(f"  - 如果标准差接近1.0，说明模型只输出噪声")
+        # ===== 步骤8: 目标值计算 =====
+        # u_tgt = v_hat - (t - r) * dudt
+        # 这是MeanFlow的核心公式，确保模型预测的是平均速度场
+        # u_tgt = v_hat - (t_ - r_) * dudt 修改
+        v = epsilon - x_target
+        u_tgt = v  # 直接拟合真实速度场（避免梯度抵消）
+        print(f"    - 修正后u_tgt: range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")
+        print(f"    - 目标值u_tgt: shape={u_tgt.shape}, range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")  
+        print(f"    - 公式: u_tgt = v - (t-r)·∂u/∂t")
 
         # ===== 步骤9: 计算误差和损失 =====
         error = u - stopgrad(u_tgt)
@@ -366,14 +332,15 @@ class ConditionalMeanFlow:
         print(f"    - 误差error: shape={error.shape}, mean={error.abs().mean():.6f}")
         
         loss = adaptive_l2_loss(error)
-        mse_val = (stopgrad(error) ** 2).mean() 
+        # mse_val = (stopgrad(error) ** 2).mean() 原来
+        mse_val = torch.mean((u - u_tgt) ** 2)
         print(f"    - Adaptive L2 loss: {loss.item():.6f}")
         print(f"    - MSE: {mse_val.item():.6f}")
         
         return loss, mse_val
 
     @torch.no_grad()
-    def translate(self, model, x_source, sample_steps=10, cfg_scale=None, device='cuda'):
+    def translate(self, model, x_source, sample_steps=30, cfg_scale=None, device='cuda'):   # sample_steps改大
         """
         图像翻译：将源染色翻译为目标染色
         
@@ -426,109 +393,51 @@ class ConditionalMeanFlow:
 
         # ===== 步骤3: 时间序列：从1.0到0.0均匀划分 =====
         t_vals = torch.linspace(1.0, 0.0, sample_steps + 1, device=device)
-
-        # ===== 关键修复 5: 时间从0到1 =====
-        # t_vals = torch.linspace(0.0, 1.0, sample_steps + 1, device=device)
         print(f"时间序列: {t_vals.cpu().numpy()}\n")
 
-        # # ===== 步骤4: ODE求解（从t=1到t=0）=====
-        # for i in range(sample_steps):
-        #     t = torch.full((z.size(0),), t_vals[i], device=device)
-        #     r = torch.full((z.size(0),), t_vals[i + 1], device=device)
-
-        #     print(f"步骤 {i+1}/{sample_steps}:")
-        #     print(f"  - 当前时间 t={t[0].item():.4f}, 目标时间 r={r[0].item():.4f}")
-        #     print(f"  - 时间间隔 Δt={(t-r)[0].item():.4f}")
-
-        #     t_ = rearrange(t, "b -> b 1 1 1").detach().clone()
-        #     r_ = rearrange(r, "b -> b 1 1 1").detach().clone()
-
-        #     # ===== 步骤4.1: 模型预测速度场 =====
-        #     if cfg_scale is not None and cfg_scale > 1.0:
-        #         # CFG: 混合条件和无条件预测
-        #         v_cond = model(z, t, r, y=None, cond_image=x_source)
-                
-        #         if self.cfg_uncond == 'zeros':
-        #             v_uncond = model(z, t, r, y=None, cond_image=torch.zeros_like(x_source))
-        #         else:
-        #             v_uncond = model(z, t, r, y=None, cond_image=v_cond)
-                
-        #         v = v_uncond + cfg_scale * (v_cond - v_uncond)
-        #         print(f"  - [CFG] v_cond: [{v_cond.min():.3f}, {v_cond.max():.3f}]")
-        #         print(f"  - [CFG] v_uncond: [{v_uncond.min():.3f}, {v_uncond.max():.3f}]")
-        #         print(f"  - [CFG] v_final: [{v.min():.3f}, {v.max():.3f}]")
-        #     else:
-        #         # 标准条件预测
-        #         # 确保明确传入：
-        #         if cfg_scale is not None and cfg_scale > 1.0:
-        #             v_cond = model(z, t, r, y=None, cond_image=x_source)
-        #             v_uncond = model(z, t, r, y=None, cond_image=torch.zeros_like(x_source))
-        #             v = v_uncond + cfg_scale * (v_cond - v_uncond)
-        #         else:
-        #             v = model(z, t, r, y=None, cond_image=x_source)
-        #         print(f"  - 预测速度场v: range=[{v.min():.3f}, {v.max():.3f}]")
-        #     '''
-        #     # ===== 步骤4.2: 更新规则: z <- z - (t-r)*v =====
-        #     # 物理意义：沿着速度场方向移动(t-r)的距离
-        #     # 从噪声逐渐变成目标图像
-        #     z = z - (t_ - r_) * v
-        #     '''
-        #     # ===== 步骤4.2: 更新规则（Euler + JVP二阶时间校正）=====
-        #     dt = (t_ - r_)
-        #     z = z - dt * v  # 一阶
-
-        #     # 二阶时间项：- 0.5 * dt^2 * ∂u/∂t
-        #     # 需要临时打开梯度，重新计算一次 u 以对 t 求导
-        #     with torch.enable_grad():
-        #         t_for_grad = t.detach().clone().requires_grad_(True)
-        #         u_for_grad = model(z, t_for_grad, r, y=None, cond_image=x_source)
-        #         s = u_for_grad.view(u_for_grad.size(0), -1).sum(dim=1)
-        #         du_dt = torch.autograd.grad(
-        #             outputs=s, inputs=t_for_grad,
-        #             grad_outputs=torch.ones_like(t_for_grad),
-        #             create_graph=False, retain_graph=False, allow_unused=False
-        #         )[0].view(-1, 1, 1, 1)
-        #     z = z - 0.5 * (dt ** 2) * du_dt
-        #     print(f"  - 更新后z: range=[{z.min():.3f}, {z.max():.3f}]")
-        #     print()
-        # 3. 逆向ODE求解
+        # ===== 步骤4: ODE求解（从t=1到t=0）=====
         for i in range(sample_steps):
-            t_curr = t_vals[i]      # 当前时间
-            t_next = t_vals[i + 1]  # 下一时间
-            dt = t_next - t_curr    # < 0 (逆向)
-            
-            t = torch.full((z.size(0),), t_curr, device=device)
-            r = torch.full((z.size(0),), t_next, device=device)
-            
-            # 模型预测速度场
+            t = torch.full((z.size(0),), t_vals[i], device=device)
+            r = torch.full((z.size(0),), t_vals[i + 1], device=device)
+
+            print(f"步骤 {i+1}/{sample_steps}:")
+            print(f"  - 当前时间 t={t[0].item():.4f}, 目标时间 r={r[0].item():.4f}")
+            print(f"  - 时间间隔 Δt={(t-r)[0].item():.4f}")
+
+            t_ = rearrange(t, "b -> b 1 1 1").detach().clone()
+            r_ = rearrange(r, "b -> b 1 1 1").detach().clone()
+
+            # ===== 步骤4.1: 模型预测速度场 =====
             if cfg_scale is not None and cfg_scale > 1.0:
+                # CFG: 混合条件和无条件预测
                 v_cond = model(z, t, r, y=None, cond_image=x_source)
-                v_uncond = model(z, t, r, y=None, cond_image=torch.zeros_like(x_source))
+                
+                if self.cfg_uncond == 'zeros':
+                    v_uncond = model(z, t, r, y=None, cond_image=torch.zeros_like(x_source))
+                else:
+                    v_uncond = model(z, t, r, y=None, cond_image=v_cond)
+                
                 v = v_uncond + cfg_scale * (v_cond - v_uncond)
+                print(f"  - [CFG] v_cond: [{v_cond.min():.3f}, {v_cond.max():.3f}]")
+                print(f"  - [CFG] v_uncond: [{v_uncond.min():.3f}, {v_uncond.max():.3f}]")
+                print(f"  - [CFG] v_final: [{v.min():.3f}, {v.max():.3f}]")
             else:
-                v = model(z, t, r, y=None, cond_image=x_source)
+                # 标准条件预测
+                # 确保明确传入：
+                if cfg_scale is not None and cfg_scale > 1.0:
+                    v_cond = model(z, t, r, y=None, cond_image=x_source)
+                    v_uncond = model(z, t, r, y=None, cond_image=torch.zeros_like(x_source))
+                    v = v_uncond + cfg_scale * (v_cond - v_uncond)
+                else:
+                    v = model(z, t, r, y=None, cond_image=x_source)
+                print(f"  - 预测速度场v: range=[{v.min():.3f}, {v.max():.3f}]")
             
-            # **关键修复**: 逆向积分 z(t-dt) = z(t) - dt * v
-            # 因为 dt < 0, 所以实际是 z = z + |dt| * (-v) = z - |dt| * (ε-x_target)
-            # 即从噪声逐渐变成目标图像
-            z = z + dt * v  # dt<0, 所以是减去噪声方向
-            
-            # 可选：添加二阶校正（提高精度）
-            if i < sample_steps - 1:  # 最后一步不需要
-                with torch.enable_grad():
-                    t_grad = t.detach().clone().requires_grad_(True)
-                    u_grad = model(z, t_grad, r, y=None, cond_image=x_source)
-                    s = u_grad.view(u_grad.size(0), -1).sum(dim=1)
-                    dudt = torch.autograd.grad(
-                        outputs=s, inputs=t_grad,
-                        grad_outputs=torch.ones_like(s),
-                        create_graph=False, retain_graph=False
-                    )[0].view(-1, 1, 1, 1)
-                z = z + 0.5 * (dt ** 2) * dudt
-        
-        # 4. 反归一化
-        z = self.normer.unnorm(z)
-        z = torch.clamp(z, 0, 1)
+            # ===== 步骤4.2: 更新规则: z <- z - (t-r)*v =====
+            # 物理意义：沿着速度场方向移动(t-r)的距离
+            # 从噪声逐渐变成目标图像
+            z = z - (t_ - r_) * v
+            print(f"  - 更新后z: range=[{z.min():.3f}, {z.max():.3f}]")
+            print()
 
         print(f"最终状态 (t=0.0):")
         print(f"  - z: shape={z.shape}, range=[{z.min():.3f}, {z.max():.3f}]")
