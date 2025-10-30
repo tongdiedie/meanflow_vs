@@ -321,7 +321,8 @@ class ConditionalMeanFlow:
         # 这是MeanFlow的核心公式，确保模型预测的是平均速度场
         # u_tgt = v_hat - (t_ - r_) * dudt 修改
         v = epsilon - x_target
-        u_tgt = v  # 直接拟合真实速度场（避免梯度抵消）
+        # u_tgt = v  # 直接拟合真实速度场（避免梯度抵消）
+        u_tgt = v - (t_ - r_) * dudt  # TODO ← 关键修正：不要直接用 u_tgt = v
         print(f"    - 修正后u_tgt: range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")
         print(f"    - 目标值u_tgt: shape={u_tgt.shape}, range=[{u_tgt.min():.3f}, {u_tgt.max():.3f}]")  
         print(f"    - 公式: u_tgt = v - (t-r)·∂u/∂t")

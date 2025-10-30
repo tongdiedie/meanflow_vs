@@ -81,16 +81,23 @@ class CrossAttentionBlock(nn.Module):
         # ---- Self-Attention ----
         xres, sh, sc = self.ada_self(x, temb)
         q = xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1)
-        # 禁用 Flash/MemEfficient 注意力，启用 math 后端
+        # 禁用 Flash/MemEfficient 注意力，启用 math 后端（为 JVP 稳定）
         with sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
             out, _ = self.self_attn(q, q, q, need_weights=False)
         x = x + out
 
-        # ---- Cross-Attention ----
+        # ---- Cross-Attention (1st) ----
         xres, sh, sc = self.ada_cross(x, temb)
         q = xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1)
+        # k = self.k_proj(cond)
+        # v = self.v_proj(cond)
+
+        # ✅ 改为：直接用 cond，投影留给 MHA 内部做（避免 double-proj）
+        # k = cond
+        # v = cond
         k = self.k_proj(cond)
         v = self.v_proj(cond)
+
         with sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
             out, _ = self.cross_attn(q, k, v, need_weights=False)
         x = x + self.proj_out(out)
@@ -98,8 +105,39 @@ class CrossAttentionBlock(nn.Module):
         # ---- MLP ----
         xres, sh, sc = self.ada_mlp(x, temb)
         x = x + self.mlp(xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1))
-        return x
 
+        # # ---- Cross-Attention (2nd) [Multi-inject] ----
+        # # 说明：再次用同一组 cross-attn 注入 cond_token，等价于在同一 block 内多次融合“原图”信息；
+        # #       系数 0.5 可缓解不稳定/过拟合（也可改为 1.0）。
+        # xres, sh, sc = self.ada_cross(x, temb)
+        # q = xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1)
+        # # k = self.k_proj(cond)
+        # # v = self.v_proj(cond)
+        # k = cond
+        # v = cond
+        # with sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+        #     out, _ = self.cross_attn(q, k, v, need_weights=False)
+        # x = x + 0.5 * self.proj_out(out)
+        
+        return x
+    
+    def self_attn_only(self, x, temb):
+        """
+        只做 self-attention + MLP，用于后半层
+        让模型摆脱条件束缚，自由重建细节
+        """
+        # Self-Attention
+        xres, sh, sc = self.ada_self(x, temb)
+        q = xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1)
+        with sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+            out, _ = self.self_attn(q, q, q, need_weights=False)
+        x = x + out
+        
+        # MLP
+        xres, sh, sc = self.ada_mlp(x, temb)
+        x = x + self.mlp(xres * (1 + sc.unsqueeze(1)) + sh.unsqueeze(1))
+        
+        return x
 
 
 class FinalLayer(nn.Module):
@@ -140,8 +178,12 @@ class ConditionalCrossAttnDiT(nn.Module):
             [CrossAttentionBlock(dim, num_heads) for _ in range(depth)]
         )
         self.final = FinalLayer(dim, patch_size, self.out_channels)
-        nn.init.normal_(self.pos_x, std=0.02)
-        nn.init.normal_(self.pos_c, std=0.02)
+
+        nn.init.normal_(self.pos_x, std=0.01)
+        nn.init.normal_(self.pos_c, std=0.01)
+
+        # ❌ 移除额外的归一化层
+        # self.cond_norm = RMSNorm(dim)
 
     def unpatchify(self, x):
         c = self.out_channels
@@ -154,8 +196,20 @@ class ConditionalCrossAttnDiT(nn.Module):
         assert cond_image is not None
         x_tok = self.x_embedder(x) + self.pos_x
         c_tok = self.cond_embedder(cond_image) + self.pos_c
+
+        # ✅ 新增：条件token做RMSNorm，避免尺度漂移
+        # c_tok = self.cond_norm(c_tok)
+
         temb = self.t_emb(t) + self.r_emb(r)
-        for blk in self.blocks:
-            x_tok = blk(x_tok, c_tok, temb)
+
+        # ✅ 策略A：前半层用 cross-attn，后半层只用 self-attn
+        n_cross = len(self.blocks) // 2  # 前 3 层用条件
+
+        for i, blk in enumerate(self.blocks):
+            if i < n_cross:
+                x_tok = blk(x_tok, c_tok, temb)  # 有条件引导
+            else:
+                x_tok = blk.self_attn_only(x_tok, temb)  # 自由生成
+        
         x_tok = self.final(x_tok, temb)
         return self.unpatchify(x_tok)

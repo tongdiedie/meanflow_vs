@@ -75,7 +75,7 @@ class ConditionalAdaGNUNet(nn.Module):
         super().__init__()
         self.enc = CondEnc(in_ch, E)
         self.temb = TEmb(E)
-        self.inp = conv3x3(in_ch, base)
+        self.inp = conv3x3(in_ch * 2, base)
         self.b1 = ResBlock(base, base, E)
         self.d1 = nn.AvgPool2d(2)
         self.b2 = ResBlock(base, base * 2, E)
@@ -90,7 +90,9 @@ class ConditionalAdaGNUNet(nn.Module):
     def forward(self, z, t, r, y=None, cond_image=None):
         assert cond_image is not None
         e = self.enc(cond_image) + self.temb(t) + self.temb(r)
-        h = self.inp(z)
+        # 将条件图像与当前状态按通道维拼接，提供对齐的空间引导
+        # 说明：MeanFlow 的调用里 z、cond_image 已做一致的归一化，这里无需再额外归一化
+        h = self.inp(torch.cat([z, cond_image], dim=1))
         h = self.b1(h, e)
         h = self.d1(h)
         h = self.b2(h, e)

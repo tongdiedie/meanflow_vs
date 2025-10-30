@@ -50,7 +50,7 @@ def main():
     loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=0)
 
     model = ConditionalCrossAttnDiT(input_size=PATCH_SIZE, patch_size=16, in_channels=3, dim=384, depth=6, num_heads=6).to(device)
-    optim = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    optim = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
 
     meanflow = ConditionalMeanFlow(
         channels=3, image_size=PATCH_SIZE,
@@ -70,8 +70,9 @@ def main():
 
         loss, mse_val = meanflow.loss(model, x_src, x_tgt, c=None)
 
-        optim.zero_grad(); loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optim.zero_grad();
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
         optim.step()
 
         if (step + 1) % EVAL_EVERY_STEPS == 0:
