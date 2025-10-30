@@ -29,7 +29,7 @@ def main():
     PATCH_SIZE = 256
     BATCH_SIZE = 8
     N_TEST_STEPS = 1000
-    SAMPLE_STEPS = 20
+    SAMPLE_STEPS = 50
     EVAL_EVERY_STEPS = 50
 
     VAL_SAVE_PRED_DIR = "./outputs/val/pred"

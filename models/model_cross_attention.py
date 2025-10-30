@@ -100,7 +100,9 @@ class CrossAttentionBlock(nn.Module):
 
         with sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
             out, _ = self.cross_attn(q, k, v, need_weights=False)
-        x = x + self.proj_out(out)
+        
+        # 🔧 关键修复：降低系数从 1.0 → 0.2
+        x = x + 0.2 * self.proj_out(out)
 
         # ---- MLP ----
         xres, sh, sc = self.ada_mlp(x, temb)
@@ -202,8 +204,8 @@ class ConditionalCrossAttnDiT(nn.Module):
 
         temb = self.t_emb(t) + self.r_emb(r)
 
-        # ✅ 策略A：前半层用 cross-attn，后半层只用 self-attn
-        n_cross = len(self.blocks) // 2  # 前 3 层用条件
+        # 🔧 关键修复：只在前 1/3 的层用 cross-attn
+        n_cross = len(self.blocks) // 3  # 前 3 层用条件
 
         for i, blk in enumerate(self.blocks):
             if i < n_cross:

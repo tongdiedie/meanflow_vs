@@ -252,7 +252,7 @@ class ConditionalMeanFlow:
         # ===== 步骤4: 插值状态 z(t) = t·ε + (1-t)·x_target =====
         # 关键改变：现在是噪声和目标图像的插值
         z = t_ * epsilon + (1 - t_) * x_target
-        v = epsilon - x_target  # ✅ 正确方向
+        
         print(f"  插值状态:")
         print(f"    - z: shape={z.shape}, range=[{z.min():.3f}, {z.max():.3f}]")
         print(f"    - 公式: z = t·ε + (1-t)·x_target")
@@ -260,6 +260,7 @@ class ConditionalMeanFlow:
         
         # ===== 步骤5: 真实速度场 v = x_target - ε =====
         # v = x_target - epsilon  修改
+        v = epsilon - x_target  # ✅ 正确方向
         u_tgt = v
         print(f"  真实速度场:")
         print(f"    - v: shape={v.shape}, range=[{v.min():.3f}, {v.max():.3f}]")
